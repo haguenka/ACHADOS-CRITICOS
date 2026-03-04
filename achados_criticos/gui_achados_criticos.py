@@ -435,6 +435,37 @@ class ModernGUI:
                 return col
         return None
 
+    def _parse_datetime_series(self, series):
+        """Converte série para datetime priorizando padrão brasileiro."""
+        parsed = pd.to_datetime(series, format='%d/%m/%Y %H:%M', errors='coerce')
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d-%m-%Y %H:%M', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d/%m/%Y', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d-%m-%Y', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, errors='coerce', dayfirst=True))
+        return parsed
+
+    def _parse_datetime_value(self, value):
+        """Converte valor único para datetime priorizando padrão brasileiro."""
+        return self._parse_datetime_series(pd.Series([value])).iloc[0]
+
+    def _format_date_columns(self, df):
+        """Formata colunas de data para DD/MM/AAAA apenas para exibição/export."""
+        df_fmt = df.copy()
+        date_cols = {
+            'Data_Exame',
+            'Data_Sinalização',
+            'DATA_HORA_PRESCRICAO',
+            'STATUS_ALAUDAR',
+            'data_sinalizacao_dt',
+            'status_laudar_dt',
+        }
+        for col in date_cols:
+            if col in df_fmt.columns:
+                parsed = self._parse_datetime_series(df_fmt[col])
+                formatted = parsed.dt.strftime('%d/%m/%Y')
+                df_fmt[col] = formatted.where(parsed.notna(), '')
+        return df_fmt
+
     def _load_status_dataframe(self):
         """Carrega a planilha de status tentando diferentes linhas de cabeçalho."""
         file_path = self.status_file.get()
@@ -583,7 +614,7 @@ class ModernGUI:
         # Filtrar por mês na coluna Data_Sinalização
         df_filtered = df.copy()
         if 'Data_Sinalização' in df_filtered.columns:
-            df_filtered['Data_Sinalização'] = pd.to_datetime(df_filtered['Data_Sinalização'], errors='coerce')
+            df_filtered['Data_Sinalização'] = self._parse_datetime_series(df_filtered['Data_Sinalização'])
             mask = (df_filtered['Data_Sinalização'].dt.month == selected_month_num) & \
                    (df_filtered['Data_Sinalização'].dt.year == selected_year)
             df_filtered = df_filtered[mask]
@@ -623,27 +654,23 @@ class ModernGUI:
             # FILTRO RIGOROSO POR DATA EXATA
             if pd.notna(data_exame_achado):
                 try:
-                    data_achado_dt = pd.to_datetime(data_exame_achado)
+                    data_achado_dt = self._parse_datetime_value(data_exame_achado)
+                    if pd.isna(data_achado_dt):
+                        continue
                     data_achado_str = data_achado_dt.strftime('%d/%m/%Y')
 
                     exames_data = []
                     for _, exame in exames_nome.iterrows():
                         if pd.notna(exame.get('DATA_HORA_PRESCRICAO')):
                             try:
-                                # CORREÇÃO: especificar formato DD-MM-YYYY para parsing correto
-                                data_exame_dt = pd.to_datetime(exame['DATA_HORA_PRESCRICAO'], format='%d-%m-%Y %H:%M')
+                                data_exame_dt = self._parse_datetime_value(exame['DATA_HORA_PRESCRICAO'])
+                                if pd.isna(data_exame_dt):
+                                    continue
                                 data_exame_str = data_exame_dt.strftime('%d/%m/%Y')
                                 if data_achado_str == data_exame_str:
                                     exames_data.append(exame)
                             except:
-                                # Se falhar com formato específico, tentar conversão automática
-                                try:
-                                    data_exame_dt = pd.to_datetime(exame['DATA_HORA_PRESCRICAO'])
-                                    data_exame_str = data_exame_dt.strftime('%d/%m/%Y')
-                                    if data_achado_str == data_exame_str:
-                                        exames_data.append(exame)
-                                except:
-                                    continue
+                                continue
 
                     if len(exames_data) == 0:
                         continue  # Se não encontrar na data exata, pular
@@ -726,11 +753,11 @@ class ModernGUI:
             return
 
         # Converter datas
-        df_com_status['data_sinalizacao_dt'] = pd.to_datetime(
-            df_com_status['Data_Sinalização'], errors='coerce'
+        df_com_status['data_sinalizacao_dt'] = self._parse_datetime_series(
+            df_com_status['Data_Sinalização']
         )
-        df_com_status['status_laudar_dt'] = pd.to_datetime(
-            df_com_status['STATUS_ALAUDAR'], format='%d-%m-%Y %H:%M', errors='coerce'
+        df_com_status['status_laudar_dt'] = self._parse_datetime_series(
+            df_com_status['STATUS_ALAUDAR']
         )
 
         # Calcular tempos
@@ -1023,6 +1050,9 @@ class ModernGUI:
                     values.append(f"{value:.2f}h" if pd.notna(value) else "N/A")
                 elif col == 'fora_do_prazo':
                     values.append("SIM" if value else "NÃO")
+                elif col in {'Data_Sinalização', 'STATUS_ALAUDAR'}:
+                    dt_value = self._parse_datetime_value(value)
+                    values.append(dt_value.strftime('%d/%m/%Y') if pd.notna(dt_value) else "")
                 else:
                     values.append(str(value) if pd.notna(value) else "")
 
@@ -1142,8 +1172,9 @@ Achados Críticos desenvolvido especificamente para o CDI.
         if filename:
             try:
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                    export_df = self._format_date_columns(self.df_correlacionado)
                     # Sheet principal
-                    self.df_correlacionado.to_excel(writer, sheet_name='Dados_Correlacionados', index=False)
+                    export_df.to_excel(writer, sheet_name='Dados_Correlacionados', index=False)
 
                     # Estatísticas médicos
                     stats_medicos = self.df_correlacionado.groupby('Medico Laudo').agg({

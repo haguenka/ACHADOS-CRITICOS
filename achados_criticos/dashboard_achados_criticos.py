@@ -112,6 +112,43 @@ class DashboardAchadosCriticos:
         self.df_status = None
         self.df_correlacionado = None
 
+    def _parse_datetime_series(self, series):
+        """Converte série para datetime priorizando padrão brasileiro."""
+        parsed = pd.to_datetime(series, format='%d/%m/%Y %H:%M', errors='coerce')
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d-%m-%Y %H:%M', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d/%m/%Y', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, format='%d-%m-%Y', errors='coerce'))
+        parsed = parsed.fillna(pd.to_datetime(series, errors='coerce', dayfirst=True))
+        return parsed
+
+    def _parse_datetime_value(self, value):
+        """Converte valor único para datetime priorizando padrão brasileiro."""
+        return self._parse_datetime_series(pd.Series([value])).iloc[0]
+
+    def _format_date_columns(self, df):
+        """Formata colunas de data para DD/MM/AAAA apenas para exibição/export."""
+        df_fmt = df.copy()
+        candidate_cols = {
+            self.data_col_achados if hasattr(self, 'data_col_achados') else None,
+            self.data_col_status if hasattr(self, 'data_col_status') else None,
+            self.data_sinalizacao_col if hasattr(self, 'data_sinalizacao_col') else None,
+            self.status_col if hasattr(self, 'status_col') else None,
+            'Data_Exame',
+            'Data_Sinalização',
+            'DATA_HORA_PRESCRICAO',
+            'STATUS_ALAUDAR',
+            'data_sinalizacao_dt',
+            'status_laudar_dt',
+        }
+
+        for col in candidate_cols:
+            if col and col in df_fmt.columns:
+                parsed = self._parse_datetime_series(df_fmt[col])
+                formatted = parsed.dt.strftime('%d/%m/%Y')
+                df_fmt[col] = formatted.where(parsed.notna(), '')
+
+        return df_fmt
+
     def render_header(self):
         """Renderiza o cabeçalho principal"""
         st.markdown("""
@@ -154,7 +191,7 @@ class DashboardAchadosCriticos:
 
         # Extrair datas disponíveis
         if self.data_sinalizacao_col and self.data_sinalizacao_col in self.df_correlacionado.columns:
-            datas = pd.to_datetime(self.df_correlacionado[self.data_sinalizacao_col], errors='coerce')
+            datas = self._parse_datetime_series(self.df_correlacionado[self.data_sinalizacao_col])
             datas_validas = datas[datas.notna()]
 
             if len(datas_validas) > 0:
@@ -385,24 +422,29 @@ class DashboardAchadosCriticos:
                 # Filtrar por data
                 if pd.notna(data_exame_achado) and self.data_col_status:
                     try:
-                        data_achado_dt = pd.to_datetime(data_exame_achado)
-                        data_achado_str = data_achado_dt.strftime('%d/%m/%Y')
-
-                        exames_data = []
-                        for _, exame in exames_nome.iterrows():
-                            if pd.notna(exame.get(self.data_col_status)):
-                                try:
-                                    data_exame_dt = pd.to_datetime(exame[self.data_col_status])
-                                    data_exame_str = data_exame_dt.strftime('%d/%m/%Y')
-                                    if data_achado_str == data_exame_str:
-                                        exames_data.append(exame)
-                                except:
-                                    continue
-
-                        if len(exames_data) > 0:
-                            exames_finais = pd.DataFrame(exames_data)
-                        else:
+                        data_achado_dt = self._parse_datetime_value(data_exame_achado)
+                        if pd.isna(data_achado_dt):
                             exames_finais = exames_nome
+                        else:
+                            data_achado_str = data_achado_dt.strftime('%d/%m/%Y')
+
+                            exames_data = []
+                            for _, exame in exames_nome.iterrows():
+                                if pd.notna(exame.get(self.data_col_status)):
+                                    try:
+                                        data_exame_dt = self._parse_datetime_value(exame[self.data_col_status])
+                                        if pd.isna(data_exame_dt):
+                                            continue
+                                        data_exame_str = data_exame_dt.strftime('%d/%m/%Y')
+                                        if data_achado_str == data_exame_str:
+                                            exames_data.append(exame)
+                                    except:
+                                        continue
+
+                            if len(exames_data) > 0:
+                                exames_finais = pd.DataFrame(exames_data)
+                            else:
+                                exames_finais = exames_nome
                     except:
                         exames_finais = exames_nome
                 else:
@@ -451,11 +493,11 @@ class DashboardAchadosCriticos:
                 return False
 
             # Converter datas
-            df_com_status['data_sinalizacao_dt'] = pd.to_datetime(
-                df_com_status[self.data_sinalizacao_col], errors='coerce'
+            df_com_status['data_sinalizacao_dt'] = self._parse_datetime_series(
+                df_com_status[self.data_sinalizacao_col]
             )
-            df_com_status['status_laudar_dt'] = pd.to_datetime(
-                df_com_status[self.status_col], format='%d-%m-%Y %H:%M', errors='coerce'
+            df_com_status['status_laudar_dt'] = self._parse_datetime_series(
+                df_com_status[self.status_col]
             )
 
             # Calcular tempos
@@ -866,10 +908,11 @@ class DashboardAchadosCriticos:
 
         # Criar buffer para Excel
         output = io.BytesIO()
+        export_df = self._format_date_columns(self.df_correlacionado)
 
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             # Sheet principal com dados correlacionados
-            self.df_correlacionado.to_excel(writer, sheet_name='Dados_Correlacionados', index=False)
+            export_df.to_excel(writer, sheet_name='Dados_Correlacionados', index=False)
 
             # Sheet com estatísticas dos médicos
             if self.medico_col:
@@ -958,8 +1001,9 @@ class DashboardAchadosCriticos:
             cols_to_show = [col for col in cols_to_show if col in self.df_correlacionado.columns]
 
             if cols_to_show:
+                df_display = self._format_date_columns(self.df_correlacionado[cols_to_show])
                 st.dataframe(
-                    self.df_correlacionado[cols_to_show].sort_values('tempo_comunicacao_horas', ascending=False),
+                    df_display.sort_values('tempo_comunicacao_horas', ascending=False),
                     use_container_width=True
                 )
 
@@ -1059,7 +1103,7 @@ def main():
 
         # Aplicar filtro de data se selecionado
         if ano_filtro is not None and dashboard.data_sinalizacao_col:
-            datas = pd.to_datetime(dashboard.df_correlacionado[dashboard.data_sinalizacao_col], errors='coerce')
+            datas = dashboard._parse_datetime_series(dashboard.df_correlacionado[dashboard.data_sinalizacao_col])
 
             # Filtrar por ano
             mask_ano = datas.dt.year == ano_filtro
