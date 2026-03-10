@@ -140,6 +140,8 @@ class DashboardAchadosCriticos:
         self.df_achados = None
         self.df_status = None
         self.df_correlacionado = None
+        self.ris_ocr_backend = None
+        self._rapidocr_engine = None
 
     def _parse_datetime_series(self, series):
         """Converte série para datetime priorizando padrão brasileiro."""
@@ -180,27 +182,44 @@ class DashboardAchadosCriticos:
 
     def _ocr_dependencies_ready(self):
         """Verifica se as dependencias de OCR estao disponiveis."""
+        self.ris_ocr_backend = None
+        self._rapidocr_engine = None
+
+        tesseract_error = None
         try:
             import pytesseract
             from PIL import Image  # noqa: F401
+            tesseract_cmd = ADMIN_SMTP_CONFIG.get("tesseract_cmd")
+            candidate_paths = [
+                tesseract_cmd,
+                shutil.which("tesseract"),
+                "/usr/bin/tesseract",
+                "/usr/local/bin/tesseract",
+                "/opt/render/project/src/.apt/usr/bin/tesseract",
+                "/opt/render/project/.apt/usr/bin/tesseract",
+            ]
+            executable = next((path for path in candidate_paths if path and os.path.exists(path)), None)
+            if executable:
+                pytesseract.pytesseract.tesseract_cmd = executable
+                self.ris_ocr_backend = "tesseract"
+                return True, ""
+            tesseract_error = (
+                "Executavel do Tesseract nao encontrado. "
+                "Configure ADMIN_SMTP_CONFIG['tesseract_cmd'] ou instale o Tesseract."
+            )
         except Exception as exc:
-            return False, f"Dependencia OCR indisponivel: {exc}"
+            tesseract_error = f"Dependencia Tesseract indisponivel: {exc}"
 
-        tesseract_cmd = ADMIN_SMTP_CONFIG.get("tesseract_cmd")
-        candidate_paths = [
-            tesseract_cmd,
-            shutil.which("tesseract"),
-            "/usr/bin/tesseract",
-            "/usr/local/bin/tesseract",
-            "/opt/render/project/src/.apt/usr/bin/tesseract",
-            "/opt/render/project/.apt/usr/bin/tesseract",
-        ]
-        executable = next((path for path in candidate_paths if path and os.path.exists(path)), None)
-        if not executable:
-            return False, "Executavel do Tesseract nao encontrado. Configure ADMIN_SMTP_CONFIG['tesseract_cmd'] ou instale o Tesseract."
+        try:
+            from rapidocr_onnxruntime import RapidOCR
 
-        pytesseract.pytesseract.tesseract_cmd = executable
-        return True, ""
+            self._rapidocr_engine = RapidOCR()
+            self.ris_ocr_backend = "rapidocr"
+            return True, ""
+        except Exception as exc:
+            rapidocr_error = f"Dependencia RapidOCR indisponivel: {exc}"
+
+        return False, f"{tesseract_error} {rapidocr_error}".strip()
 
     def _scale_ris_box(self, box, width, height):
         """Escala a regiao OCR para a resolucao da imagem enviada."""
@@ -220,7 +239,6 @@ class DashboardAchadosCriticos:
 
     def _ocr_ris_region(self, image, box, multiline=False):
         """Executa OCR em uma regiao da tela RIS."""
-        import pytesseract
         from PIL import ImageOps
 
         crop = image.crop(box)
@@ -229,13 +247,35 @@ class DashboardAchadosCriticos:
         crop = crop.resize((crop.width * 2, crop.height * 2))
         crop = crop.point(lambda p: 255 if p > 155 else 0)
 
-        psm = "6" if multiline else "7"
-        text = pytesseract.image_to_string(
-            crop,
-            lang="por+eng",
-            config=f"--oem 3 --psm {psm}"
-        )
-        return self._clean_ocr_text(text)
+        if self.ris_ocr_backend == "tesseract":
+            import pytesseract
+
+            psm = "6" if multiline else "7"
+            text = pytesseract.image_to_string(
+                crop,
+                lang="por+eng",
+                config=f"--oem 3 --psm {psm}"
+            )
+            return self._clean_ocr_text(text)
+
+        if self.ris_ocr_backend == "rapidocr":
+            image_array = np.array(crop.convert("RGB"))
+            result = self._rapidocr_engine(
+                image_array,
+                use_det=False,
+                use_cls=False,
+                use_rec=True
+            )
+            texts = getattr(result, "txts", None)
+            if texts is None and isinstance(result, tuple) and result:
+                texts = result[0]
+            if not texts:
+                return ""
+            if isinstance(texts, str):
+                return self._clean_ocr_text(texts)
+            return self._clean_ocr_text(" ".join(str(item) for item in texts if item))
+
+        return ""
 
     def extract_ris_screen_text(self, uploaded_image):
         """Extrai campos preenchidos da tela RIS via OCR."""
@@ -385,7 +425,9 @@ class DashboardAchadosCriticos:
                         st.error(error_message)
                     else:
                         st.session_state.ris_extracted_df = extracted_df
+                        backend_name = "Tesseract" if self.ris_ocr_backend == "tesseract" else "RapidOCR"
                         st.success(f"Leitura concluida. {len(extracted_df)} campo(s) foram enviados para revisao.")
+                        st.caption(f"Backend OCR usado: {backend_name}")
 
                 st.markdown("### Envio")
                 recipient = st.text_input(

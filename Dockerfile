@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements_dashboard.txt /app/requirements_dashboard.txt
 RUN pip install -r /app/requirements_dashboard.txt
+RUN python -c "import PIL, pytesseract, rapidocr_onnxruntime; print('OCR deps OK')"
+RUN tesseract --version
 
 COPY . /app
 
