@@ -154,8 +154,8 @@ RIS_FIELD_OCR_RULES = {
         "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÉÊÍÓÔÕÚÇàáâãéêíóôõúç ",
     },
     "Contato com (Sucesso)": {
-        "psm": 7,
-        "scale": 6,
+        "psm": 8,
+        "scale": 10,
         "whitelist": "SsIiMmNnAaOoÃãÕõ",
     },
     "Achado Crítico": {
@@ -466,6 +466,13 @@ class DashboardAchadosCriticos:
         rules = RIS_FIELD_OCR_RULES.get(field_name, {})
         scale = rules.get("scale", 4)
 
+        if field_name == "Contato com (Sucesso)":
+            focus_width = max(1, int(crop.width * 0.45))
+            left_margin = max(0, int(crop.width * 0.03))
+            top_margin = max(0, int(crop.height * 0.12))
+            bottom_margin = max(top_margin + 1, int(crop.height * 0.88))
+            crop = crop.crop((left_margin, top_margin, focus_width, bottom_margin))
+
         base = crop.convert("L")
         base = base.filter(ImageFilter.SHARPEN)
         base = base.resize((max(1, base.width * scale), max(1, base.height * scale)))
@@ -539,6 +546,19 @@ class DashboardAchadosCriticos:
                 if score > best_score:
                     best_score = score
                     best_text = text
+
+            if field_name == "Contato com (Sucesso)" and not self._clean_ocr_text(best_text):
+                fallback_config = "--oem 3 --psm 8"
+                for variant in variants:
+                    text = pytesseract.image_to_string(
+                        variant,
+                        lang="por+eng",
+                        config=fallback_config
+                    )
+                    score = self._score_ris_candidate(field_name, text)
+                    if score > best_score:
+                        best_score = score
+                        best_text = text
 
             return self._clean_ocr_text(best_text)
 
