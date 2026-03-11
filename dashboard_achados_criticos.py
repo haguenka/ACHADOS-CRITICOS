@@ -129,7 +129,7 @@ ADMIN_SMTP_CONFIG = {
 RIS_DIALOG_FIELD_REGIONS = [
     {"field": "Resultado Crítico", "box": (0.31, 0.13, 0.70, 0.21), "multiline": False},
     {"field": "Contato", "box": (0.20, 0.25, 0.59, 0.34), "multiline": False},
-    {"field": "Contato com (Sucesso)", "box": (0.88, 0.25, 0.995, 0.34), "multiline": False},
+    {"field": "Contato com (Sucesso)", "box": (0.80, 0.245, 0.965, 0.335), "multiline": False},
     {"field": "Achado Crítico", "box": (0.18, 0.40, 0.98, 0.49), "multiline": False},
     {"field": "Data e Hora", "box": (0.19, 0.48, 0.59, 0.58), "multiline": False},
     {"field": "Observações", "box": (0.18, 0.70, 0.995, 0.96), "multiline": True},
